@@ -1,0 +1,2 @@
+gcc `./sysprobe -flags` -DDEBUG -O0 -g -Wall   -c sim-cache.c
+Makefile:405: recipe for target 'sim-cache.o' failed

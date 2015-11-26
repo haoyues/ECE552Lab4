@@ -127,6 +127,22 @@ typedef struct _RPTEntry {
     RPTState state;
 }RPTEntry;
 
+/* Data structure spporting openended */
+struct ghb_entry
+{
+    int entry_index;
+    md_addr_t miss_addr;
+    struct ghb_entry* prev;
+    struct ghb_entry* ghb_point_me;
+    struct index_table_entry* it_point_me;
+};
+
+struct index_table_entry
+{
+    md_addr_t miss_addr;
+    struct ghb_entry* current;
+};
+
 /* ECE552 Assignment 4 - END CODE*/
 /* cache block (or line) definition */
 struct cache_blk_t

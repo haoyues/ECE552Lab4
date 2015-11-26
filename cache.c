@@ -139,6 +139,79 @@
 /* bound sqword_t/dfloat_t to positive int */
 #define BOUND_POS(N)		((int)(MIN(MAX(0, (N)), 2147483647)))
 
+/* ECE552 Assignment 4 - BEGIN CODE*/
+
+/* previous miss address */
+md_addr_t prev_addr;
+
+/* index table size */
+#define IT_SIZE 16384
+#define IT_SHIFT (cp)->set_shift
+#define IT_INX_MASK (IT_SIZE - 1)
+struct index_table_entry index_table[IT_SIZE];
+
+/* global history buffer - a circular buffer queue */
+#define GHB_ELEMENTS 10000000
+#define GHB_SIZE (GHB_ELEMENTS + 1)
+struct ghb_entry ghb[GHB_SIZE];
+int queueFront, queueTail;
+
+/* number of history to look at */
+#define DEPTH_NUM 30
+#define HISTORY_NUM 2
+
+/* openended helper functions */
+void ghb_it_init() {
+    queueFront = queueTail = 0;
+    prev_addr = 0;
+    int i;
+    
+    for (i = 0; i < GHB_SIZE; i++) {
+        ghb[i].ghb_point_me = NULL;
+        ghb[i].it_point_me = NULL;
+        ghb[i].prev = NULL;
+        ghb[i].miss_addr = 0;
+    }
+    
+    for (i = 0; i < IT_SIZE; i++) {
+        index_table[i].miss_addr = 0;
+        index_table[i].current = NULL;
+    }
+}
+
+/* ghb insert function needs to be called before index table gets updated*/
+struct ghb_entry* ghb_insert(md_addr_t addr, int index) {
+    if (ghb[queueTail].miss_addr != 0) {
+        // ghb full, wrap around, replace entry to more recent entry
+        if (ghb[queueTail].ghb_point_me != NULL) {
+            ghb[queueTail].ghb_point_me->prev = NULL;
+        }
+        
+        if (ghb[queueTail].it_point_me != NULL) {
+            ghb[queueTail].it_point_me->current = NULL;
+        }
+    }
+    
+    // new ghb entry
+    ghb[queueTail].miss_addr = addr;
+    ghb[queueTail].entry_index = queueTail;
+    
+    // called before index table gets updated
+    // current entry's prev = previous current
+    ghb[queueTail].prev = index_table[index].current;
+    
+    if (ghb[queueTail].prev != NULL) {
+        ghb[queueTail].prev->ghb_point_me = &ghb[queueTail];
+        ghb[queueTail].prev->it_point_me = NULL;
+    }
+    
+    int tmp = queueTail;
+    queueTail = (queueTail + 1) % GHB_SIZE;
+    return &ghb[tmp];
+}
+
+/* ECE552 Assignment 4 - END CODE*/
+
 /* unlink BLK from the hash table bucket chain in SET */
 static void
 unlink_htab_ent(struct cache_t *cp,		/* cache to update */
@@ -414,6 +487,11 @@ cache_create(char *name,		/* name of the cache */
         // init the RPT
         cp->RPT = (RPTEntry *)malloc(prefetch_type * sizeof(RPTEntry));
     }
+    
+    // openended initialization
+    if (prefetch_type == 2) {
+        ghb_it_init();
+    }
     /*ECE452 Assignment 1 -  END CODE*/
   return cp;
 }
@@ -512,6 +590,7 @@ cache_reg_stats(struct cache_t *cp,	/* cache instance */
 
 }
 
+/* ECE552 Assignment 4 - BEGIN CODE*/
 /* Next Line Prefetcher */
 void next_line_prefetcher(struct cache_t *cp, md_addr_t addr) {
     //check if the next block is already in cache
@@ -535,13 +614,55 @@ void next_line_prefetcher(struct cache_t *cp, md_addr_t addr) {
     }
 }
 
-/*ECE452 Assignment 1 -  BEGIN CODE*/
 md_addr_t get_PC();
-/*ECE452 Assignment 1 -  END CODE*/
 
 /* Open Ended Prefetcher */
 void open_ended_prefetcher(struct cache_t *cp, md_addr_t addr) {
-	; 
+    /* very first miss address */
+    if (prev_addr == 0) {
+        prev_addr = addr;
+    }
+    
+    int index = (addr >> IT_SHIFT) & IT_INX_MASK;
+  
+    // create ghb entry
+    struct ghb_entry* curr_ghb_entry = ghb_insert(addr, index);
+    
+    if (curr_ghb_entry == NULL) {
+        prev_addr = addr;
+        return;  // ghb full
+    }
+    
+    index_table[index].miss_addr = addr;
+    index_table[index].current = curr_ghb_entry;
+    curr_ghb_entry->it_point_me = &index_table[index];
+    
+    /* Traverse ghb list, get all possible deltas. Calculate prefetch address
+     according to the delta */
+    struct ghb_entry* pt = curr_ghb_entry->prev;
+    int depth = 0;
+    int pt_index;
+    int next_inx;
+    int curr_index = curr_ghb_entry->entry_index;
+    while (pt != NULL && depth < DEPTH_NUM) {
+        pt_index = pt->entry_index;
+        next_inx = (pt_index + 1) % GHB_SIZE;
+        md_addr_t prefetch_addr = ghb[next_inx].miss_addr;
+        if (next_inx != curr_index) {
+            cache_access(cp, Read, prefetch_addr, NULL, 1, NULL, NULL, NULL, 1);
+        }
+        int try = 0;
+        for (;next_inx != curr_index && try < HISTORY_NUM; try++) {
+            next_inx = (next_inx + 1) % GHB_SIZE;
+            prefetch_addr = ghb[next_inx].miss_addr;
+            cache_access(cp, Read, prefetch_addr, NULL, 1, NULL, NULL, NULL, 1);
+        }
+        pt = pt->prev;
+        depth ++;
+    }
+    
+    prev_addr = addr;
+
 }
 
 /* Stride Prefetcher */
@@ -637,6 +758,8 @@ void stride_prefetcher(struct cache_t *cp, md_addr_t addr) {
     }
 }
 
+/* ECE552 Assignment 4 - END CODE*/
+
 
 /* cache x might generate a prefetch after a regular cache access to address addr */
 void generate_prefetch(struct cache_t *cp, md_addr_t addr) {
@@ -660,8 +783,6 @@ void generate_prefetch(struct cache_t *cp, md_addr_t addr) {
 	}
 
 }
-
-//md_addr_t get_PC();
 
 /* print cache stats */
 void
